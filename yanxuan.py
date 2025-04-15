@@ -7,8 +7,6 @@ import base64
 from fontTools.ttLib import TTFont
 import ddddocr
 from PIL import ImageFont, Image, ImageDraw
-from tkinter import Tk
-from tkinter.filedialog import askdirectory
 
 class FontDecoder:
     def __init__(self, headers, cookies_raw):
@@ -54,11 +52,23 @@ class FontDecoder:
             char = chr(unicode_code)
             img_size = 128
             img = Image.new('RGB', (img_size, img_size), 'white')
+
             draw = ImageDraw.Draw(img)
             font_size = int(img_size * 0.7)
-            font = ImageFont.truetype(font_path, font_size)
-            text_width, text_height = draw.textsize(char, font=font)
-            draw.text(((img_size - text_width) / 2, (img_size - text_height) / 2), char, fill='black', font=font)
+            pil_font = ImageFont.truetype(font_path, font_size) # Renamed to avoid conflict
+            # Use textbbox to get the bounding box
+            bbox = draw.textbbox((0, 0), char, font=pil_font)
+            # Calculate width and height from the bounding box
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            # Calculate position to center the text
+            text_x = (img_size - text_width) / 2 - bbox[0]
+            text_y = (img_size - text_height) / 2 - bbox[1]
+            draw.text((text_x, text_y), char, fill='black', font=pil_font)
+
+            # img = img.convert('L') # 转为灰度图
+            # threshold = 128
+            # img = img.point(lambda p: p > threshold and 255)
 
             try:
                 recognized_text = self.ocr_engine.classification(img)
@@ -78,27 +88,30 @@ class FontDecoder:
         print("字体映射字典:", recognition_dict)
 
         return recognition_dict
+
     def convert_dialogue(self, text):
-        # 匹配以"广"开头，以"上"结尾的文本，中间可以是任何内容
-        pattern = r'广(.*?)上'
+        converted_text = text.replace(';', '：')
         
-        # 替换函数
+        # 合并正则表达式，匹配两类错误（以 "r" 开头或以 "广"/"厂" 开头），结尾兼容 "]" 或 "J"
+        pattern = r'(?:r(.*?)(?:\]|J)|[广厂](.*?)(?:\]|J))'
+        
         def replace(match):
-            # 获取匹配的内容（不包括"广"和"上"）
-            content = match.group(1)
-            # 返回用「」包围的内容
+            content = match.group(1) if match.group(1) is not None else match.group(2)
             return f'「{content}」'
         
-        # 使用re.sub进行替换
-        converted_text = re.sub(pattern, replace, text)
+        converted_text = re.sub(pattern, replace, converted_text)
         
-        # 替换 "o" 为 "。"
-        converted_text = converted_text.replace('o', '。')
+        # 替换中文后面的 "o" 为 "。", 当后面不是英文字符或者为换行时
+        converted_text = re.sub(r'([\u4e00-\u9fff]|[0-9])o(?![A-Za-z])', r'\1。', converted_text)
         
-        # 替换 "I" 为 "！"
-        converted_text = converted_text.replace('I', '！')
+        # 替换中文后面的 "l" 为 "！", 当后面不是英文字符时
+        converted_text = re.sub(r'([\u4e00-\u9fff])l(?![A-Za-z])', r'\1！', converted_text)
+        
+        # 替换中文后面的 "a" 为 "？", 当后面不是英文字符时
+        converted_text = re.sub(r'([\u4e00-\u9fff])a(?![A-Za-z])', r'\1？', converted_text)
         
         return converted_text
+
     def replace_string_matches(self, input_str, mapping_dict):
         pattern = re.compile("|".join(re.escape(key) for key in mapping_dict.keys()))
 
@@ -136,7 +149,6 @@ def get_firstsession(url, i, folder_path, decoder):
     except requests.exceptions.RequestException as err:
         print(f"Error occurred: {err}")
         return None
-
     title_tag = soup.find('h1')
     title = title_tag.text if title_tag else "未找到标题"
 
@@ -147,16 +159,17 @@ def get_firstsession(url, i, folder_path, decoder):
     if matches and len(matches) > 2:
         base64_font_data = matches[2]
         decoded_font_data = base64.b64decode(base64_font_data)
-        font_file_path = "/tmp/font_file.ttf"
+        font_file_path = "./tmp/font_file.ttf"
         with open(font_file_path, "wb") as font_file:
             font_file.write(decoded_font_data)
         print(f"字体文件已成功保存到：{font_file_path}")
 
-        mapping_dict = decoder.recognize_font(font_file_path)
-        input_file = f'{title}.txt'
-        output_file = f'第{i}节{title}.txt'
-        decoder.my_replace_text(input_file, output_file, mapping_dict, folder_path)
-        os.remove(font_file_path)
+
+    mapping_dict = decoder.recognize_font(font_file_path)
+    input_file = f'{title}.txt'
+    output_file = f'第{i}节{title}.txt'
+    decoder.my_replace_text(input_file, output_file, mapping_dict, folder_path)
+    os.remove(font_file_path)
         
     url_pattern = re.compile(r'"next_section":{[^}]*"url":"(https?://[^"]+)"')
     match = url_pattern.search(text_response)
@@ -170,20 +183,14 @@ def get_firstsession(url, i, folder_path, decoder):
 
 if __name__ == '__main__':
 
-    folder_path = '/Users/yanxue/Download/'
+    folder_path = './Download/'
    
+    firstsession_url = 'https://www.zhihu.com/market/paid_column/1707758824595918848/section/1891433354051711296'
 
-
-
-    firstsession_url = 'https://www.zhihu.com/market/paid_column/1799112318019334144/section/1801706263165427714'
-
-    cookies = '填写自己ck'
-   
-
+    cookies = ""    
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8',
-       
     }
 
     decoder = FontDecoder(headers, cookies)
